@@ -5,12 +5,15 @@ import (
 	"time"
 	"webook/config"
 	"webook/internal/repository"
+	"webook/internal/repository/cache"
 	"webook/internal/repository/dao"
 	"webook/internal/service"
 	"webook/internal/web"
 	"webook/internal/web/middleware"
 
 	"github.com/gin-contrib/cors"
+	"github.com/redis/go-redis/v9"
+
 	// "github.com/gin-contrib/sessions/redis"
 	"github.com/gin-gonic/gin"
 
@@ -21,7 +24,8 @@ import (
 func main() {
 	db := initDB()
 	server := initWebServer()
-	u := initUserHandler(db)
+	rdb := initRedis()
+	u := initUserHandler(db, rdb)
 	u.RegisterRoutes(server)
 	server.Run(":8080")
 }
@@ -98,10 +102,19 @@ func initWebServer() *gin.Engine {
 	return server
 }
 
-func initUserHandler(db *gorm.DB) *web.UserHandler {
+func initUserHandler(db *gorm.DB, rdb redis.Cmdable) *web.UserHandler {
 	ud := dao.NewUserDAO(db)
-	ur := repository.NewUserRepository(ud)
+	uc := cache.NewUserCache(rdb)
+	ur := repository.NewUserRepository(ud, uc)
 	us := service.NewUserService(ur)
-	uhdl := web.NewUserHandler(us)
-	return uhdl
+	u := web.NewUserHandler(us)
+	return u
+}
+
+func initRedis() redis.Cmdable {
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: config.Config.Redis.Addr,
+	})
+
+	return redisClient
 }
