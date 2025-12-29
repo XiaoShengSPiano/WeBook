@@ -14,6 +14,8 @@ import (
 	jwt "github.com/golang-jwt/jwt/v5"
 )
 
+const biz = "login"
+
 type UserClaims struct {
 	jwt.RegisteredClaims
 	Uid       int64 // 需要放入token中的数据
@@ -24,10 +26,11 @@ type UserClaims struct {
 type UserHandler struct {
 	emailExp    *regexp.Regexp
 	passwordExp *regexp.Regexp
-	svc         *service.UserService
+	svc         service.UserService
+	codeSvc     service.CodeService
 }
 
-func NewUserHandler(svc *service.UserService) *UserHandler {
+func NewUserHandler(svc service.UserService, codeSvc service.CodeService) *UserHandler {
 	// 正则表达式校验请求用户注册信息
 	const (
 		emailRegexPattern = "^\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*$"
@@ -39,6 +42,7 @@ func NewUserHandler(svc *service.UserService) *UserHandler {
 		emailExp:    regexp.MustCompile(emailRegexPattern, regexp.None),
 		passwordExp: regexp.MustCompile(passwordRegexPattern, regexp.None),
 		svc:         svc,
+		codeSvc:     codeSvc,
 	}
 }
 
@@ -51,6 +55,8 @@ func (u *UserHandler) RegisterRoutes(server *gin.Engine) {
 	ug.POST("/edit", u.Edit)
 	// ug.GET("/profile", u.Profile)
 	ug.GET("/profile", u.ProfileJWT)
+	ug.POST("/login_sms/code/send", u.SendLoginSMSCode)
+	ug.POST("login_sms", u.LoginSMS)
 }
 
 // 注册路由处理逻辑
@@ -96,6 +102,7 @@ func (u *UserHandler) SignUp(ctx *gin.Context) {
 		return
 	}
 
+	// 调用service层
 	err = u.svc.SignUp(ctx, domain.User{
 		Email:    req.Email,
 		Password: req.Password,
@@ -113,7 +120,6 @@ func (u *UserHandler) SignUp(ctx *gin.Context) {
 
 	ctx.String(http.StatusOK, "注册成功......")
 
-	fmt.Println("%v", req)
 }
 
 // 使用JWT实现用户登录
@@ -143,11 +149,21 @@ func (u *UserHandler) LoginJWT(ctx *gin.Context) {
 		return
 	}
 
+	if err = u.setJWTToken(ctx, user.Id); err != nil {
+		ctx.String(http.StatusOK, "系统错误......")
+		return
+	}
+	fmt.Println(user)
+
+	ctx.String(http.StatusOK, "登录成功......")
+}
+
+func (u *UserHandler) setJWTToken(ctx *gin.Context, uid int64) error {
 	claims := UserClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 30)),
 		},
-		Uid:       user.Id,
+		Uid:       uid,
 		UserAgent: ctx.Request.UserAgent(),
 	}
 
@@ -156,15 +172,12 @@ func (u *UserHandler) LoginJWT(ctx *gin.Context) {
 	key := []byte("95osj3fUD7fo0mlYdDbncXz4VD2igvf0")
 	tokenStr, err := token.SignedString(key)
 	if err != nil {
-		ctx.String(http.StatusOK, "系统错误......")
-		return
+		return err
 	}
 
 	// 将生成的token写入到响应头
 	ctx.Header("x-jwt-token", tokenStr)
-	fmt.Println(user)
-
-	ctx.String(http.StatusOK, "登录成功......")
+	return nil
 }
 
 // 用户登录处理逻辑
@@ -249,4 +262,65 @@ func (u *UserHandler) ProfileJWT(ctx *gin.Context) {
 
 	fmt.Println("claims.Uid:", claims.Uid)
 	ctx.String(http.StatusOK, "profile......")
+}
+
+func (u *UserHandler) SendLoginSMSCode(ctx *gin.Context) {
+	type Req struct {
+		Phone string `json:"phone"`
+	}
+
+	var req Req
+	if err := ctx.Bind(&req); err != nil {
+		return
+	}
+
+	if req.Phone == "" {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 4,
+			Msg:  "输入有误......",
+		})
+		return
+	}
+
+	err := u.codeSvc.Send(ctx, biz, req.Phone)
+	switch err {
+	case nil:
+		ctx.JSON(http.StatusOK, Result{
+			Msg: "验证码发送成功......",
+		})
+	case service.ErrCodeSendTooFrequently:
+		ctx.JSON(http.StatusOK, Result{
+			Msg: "验证码发送频繁......",
+		})
+	default:
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误......",
+		})
+	}
+}
+
+func (u *UserHandler) LoginSMS(ctx *gin.Context) {
+	type Req struct {
+		Phone string `json:"phone"`
+		Code  string `json:"code"`
+	}
+
+	var req Req
+	if err := ctx.Bind(&req); err != nil {
+		return
+	}
+
+	err := u.codeSvc.Verify(ctx, biz, req.Phone, req.Code)
+	if err != nil {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 4,
+			Msg:  "验证码错误......",
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, Result{
+		Msg: "验证码校验通过......",
+	})
 }

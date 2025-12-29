@@ -23,19 +23,24 @@ var (
 	ErrUnknowForCode          = errors.New("unknow code")
 )
 
-type CodeCache struct {
+type CodeCache interface {
+	SetCode(ctx context.Context, biz string, phone string, code string) error
+	VerifyCode(ctx context.Context, biz string, phone string, inputCode string) error
+}
+
+type RedisCodeCache struct {
 	client redis.Cmdable
 }
 
-func NewCodeCache(client redis.Cmdable) *CodeCache {
-	return &CodeCache{client: client}
+func NewCodeCache(client redis.Cmdable) CodeCache {
+	return &RedisCodeCache{client: client}
 }
 
-func (c *CodeCache) key(biz string, phone string) string {
+func (c *RedisCodeCache) key(biz string, phone string) string {
 	return fmt.Sprintf("phone_code:%s:%s", biz, phone)
 }
 
-func (c *CodeCache) SetCode(ctx context.Context, biz string, phone string,
+func (c *RedisCodeCache) SetCode(ctx context.Context, biz string, phone string,
 	code string) error {
 	key := c.key(biz, phone)
 	res, err := c.client.Eval(ctx, luaSetCode, []string{key}, code).Int()
@@ -54,7 +59,7 @@ func (c *CodeCache) SetCode(ctx context.Context, biz string, phone string,
 	}
 }
 
-func (c *CodeCache) VerifyCode(ctx context.Context, biz string, phone string, inputCode string) error {
+func (c *RedisCodeCache) VerifyCode(ctx context.Context, biz string, phone string, inputCode string) error {
 	res, err := c.client.Eval(ctx, luaVerifyCode, []string{c.key(biz, phone)}, inputCode).Int()
 	if err != nil {
 		return err
